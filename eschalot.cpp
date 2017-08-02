@@ -69,6 +69,8 @@
 #include <openssl/bn.h>
 #include <openssl/pem.h>
 
+#include "debug.h"
+
 #define OPENSSL_VERSION_1_1 0x10100000L
 
 /* Define NEED_HTOBE32 if htobe32() is not available on your platform. */
@@ -116,12 +118,6 @@ extern char *__progname;
 
 /* Error and debug functions */
 static void usage();
-
-static void error(char * /*message*/, ...);
-
-static void verbose(char * /*message*/, ...);
-
-static void normal(char * /*unused*/, ...);
 
 static void (*msg)(char *, ...);
 
@@ -187,8 +183,15 @@ main(int argc, char *argv[]) {
     msg = normal;    /* Default: non-verbose */
     search = nullptr;    /* No default search, has to be specified */
 
-    setoptions(argc, argv);
-
+    try {
+        setoptions(argc, argv);
+    } catch (const char* a) {
+        std::cout << "Error: " << a << std::endl;
+        exit(1);
+    } catch (...) {
+        std::cout << "Error: Unknown exception caught." << std::endl;
+        exit(1);
+    }
     if (fflag) {
         readfile();
         msg(const_cast<char *>("Sorting the word hashes and removing duplicates.\n"));
@@ -213,12 +216,21 @@ main(int argc, char *argv[]) {
         msg(const_cast<char *>("Final word count: %d.\n"), wordcount);
     }
 
-    /* Start our threads */
-    for (i = 1; i <= threads; i++) {
-        count[i] = 0;
-        if (pthread_create(&babies[i], nullptr, worker, (void *) &count[i]) != 0)
-            std::cout << const_cast<char *>("Failed to start thread!\n");
-        msg(const_cast<char *>("Thread #%d started.\n"), i);
+
+    try {
+        /* Start our threads */
+        for (i = 1; i <= threads; i++) {
+            count[i] = 0;
+            if (pthread_create(&babies[i], nullptr, worker, (void *) &count[i]) != 0)
+                throw "Failed to start thread!";
+            msg(const_cast<char *>("Thread #%d started.\n"), i);
+        }
+    } catch (const char* a) {
+        std::cout << "Error: " << a << std::endl;
+        exit(1);
+    } catch (...) {
+        std::cout << "Error: Caught unknown exception." << std::endl;
+        exit(1);
     }
 
     /* Monitor performance
@@ -285,12 +297,12 @@ worker(void *arg) {
 #if OPENSSL_VERSION_NUMBER >= OPENSSL_VERSION_1_1
         rsa = RSA_new();
         if (!RSA_generate_key_ex(rsa, RSA_KEYS_BITLEN, big_e, NULL))
-            error("RSA Key Generation failed!\n");
+            throw "RSA Key Generation failed!";
 #else
         rsa = RSA_generate_key(RSA_KEYS_BITLEN, RSA_E_START,
                                nullptr, nullptr);
         if (rsa == nullptr)
-            std::cout << const_cast<char *>("RSA Key Generation failed!\n");
+            throw "RSA Key Generation failed!";
 #endif
 
         /* Too chatty - disable. */
@@ -298,11 +310,11 @@ worker(void *arg) {
 
         /* Encode RSA key in X.690 DER format */
         if ((derlen = i2d_RSAPublicKey(rsa, nullptr)) < 0)
-            std::cout << const_cast<char *>("DER encoding failed!\n");
+            throw "DER encoding failed!";
         if ((der = tmp = (uint8_t *) malloc((size_t) derlen)) == nullptr)
-            std::cout << const_cast<char *>("malloc(derlen) failed!\n");
+            throw "malloc(derlen) failed!";
         if (i2d_RSAPublicKey(rsa, &tmp) != derlen)
-            std::cout << const_cast<char *>("DER encoding failed!\n");
+            throw "DER encoding failed!";
 
         /* Prepare the hash context */
         SHA1_Init(&hash);
@@ -343,15 +355,15 @@ worker(void *arg) {
                 BIGNUM *new_e;
                 new_e = BN_bin2bn((uint8_t *)&e_be, SIZE_OF_E, NULL);
                 if (new_e == NULL)
-                    error("Failed to convert e to BIGNUM!\n");
+                    throw "Failed to convert e to BIGNUM!";
                 if(!RSA_set0_key(rsa, NULL, new_e, NULL))
-                    error("Failed to set e in RSA key!\n");
+                    throw "Failed to set e in RSA key!";
 #else
                 if (BN_bin2bn((uint8_t *) &e_be, SIZE_OF_E, rsa->e) == nullptr)
-                    std::cout << const_cast<char *>("Failed to set e in RSA key!\n");
+                    throw "Failed to set e in RSA key!";
 #endif
                 if (!validkey(rsa))
-                    std::cout << const_cast<char *>("A bad key was found!\n");
+                    throw "A bad key was found!";
                 if (pflag)
                     onion[prefixlen] = '\0';
 
@@ -384,8 +396,11 @@ worker(void *arg) {
                 }
 
                 pthread_mutex_lock(&printresult_lock);
-                printresult(rsa, onion, onionfinal);
-
+                try {
+                    printresult(rsa, onion, onionfinal);
+                } catch (const char* a) {
+                    std::cout << "Error: " << a << std::endl;
+                }
                 pthread_mutex_unlock(&printresult_lock);
 
 
@@ -400,8 +415,7 @@ worker(void *arg) {
 }
 
 /* Read words from file */
-void
-readfile() {
+void readfile() {
     FILE *file;
     uint8_t w[ONION_LENP1] = {0}, buf[10];
     uint8_t len, j;
@@ -476,15 +490,15 @@ bool validkey(RSA *rsa) {
 
     RSA_get0_key(rsa, &n, &e, &d);
     if (n == NULL || e == NULL || d == NULL)
-        error("RSA_get0_key() failed!\n");
+        throw "RSA_get0_key() failed!";
 
     RSA_get0_factors(rsa, &p, &q);
     if (p == NULL || q == NULL)
-        error("RSA_get0_factors() failed!\n");
+        throw "RSA_get0_factors() failed!";
 
     RSA_get0_crt_params(rsa, &dmp1, &dmq1, &iqmp);
     if (dmp1 == NULL || dmq1 == NULL || iqmp == NULL)
-        error("RSA_get0_crt_params() failed!\n");
+        throw "RSA_get0_crt_params() failed!";
 
     BN_sub(p1, p, BN_value_one());	/* p - 1 */
     BN_sub(q1, q, BN_value_one());	/* q - 1 */
@@ -536,10 +550,10 @@ bool validkey(RSA *rsa) {
     BN_mod_inverse(new_iqmp, q, p, ctx);	/* q ^ -1 mod p */
 
     if (!RSA_set0_key(rsa, NULL, NULL, new_d))
-        error("RSA_set0_key() failed!\n");
+        throw "RSA_set0_key() failed!";
 
     if (!RSA_set0_crt_params(rsa, new_dmp1, new_dmq1, new_iqmp))
-        error("RSA_set0_crt_params() failed!\n");
+        throw "RSA_set0_crt_params() failed!";
 #else
     BN_mod_inverse(rsa->d, rsa->e, lambda, ctx);    /* d */
     BN_mod(rsa->dmp1, rsa->d, p1, ctx);        /* d mod(p - 1) */
@@ -558,9 +572,11 @@ bool validkey(RSA *rsa) {
     return true;
 }
 
-/* Base32 encode 10 byte long 'src' into 16 character long 'dst' */
-/* Experimental, unroll everything. So far, it seems to be the fastest of the
- * algorithms that I've tried. TODO: review and decide if it's final.*/
+/* Base32 encode 10 byte long 'src' into 16 character long 'dst'
+ * Experimental, unroll everything. So far, it seems to be the fastest of the
+ * algorithms that I've tried.
+ * TODO: review and decide if it's final.
+ */
 void
 base32_enc(uint8_t *dst, const uint8_t *src) {
     dst[0] = (uint8_t) BASE32_ALPHABET[(src[0] >> 3)];
@@ -633,16 +649,17 @@ printresult(RSA *rsa, uint8_t *target, uint8_t *actual) {
     BIO_free(b);
 
     if ((dst = (uint8_t *) malloc(buf->length + 1)) == nullptr)
-        error(const_cast<char *>("malloc(buf->length + 1) failed!\n"));
+        throw "malloc(buf->length + 1) failed!\n";
     memcpy(dst, buf->data, buf->length);
 
     dst[buf->length] = '\0';
 
     msg(const_cast<char *>("Found a key for %s (%d) - %s.onion\n"),
         target, strnlen((char *) target, ONION_LENP1), actual);
-    printf("-----<===###################===>-----\n");
-    printf("%s.onion\n", actual);
-    printf("%s\n", dst);
+    sleep(static_cast<unsigned int>(0.01)); // Somehow, without sleep(), the output is broken.
+    std::cout << "-----<===###################===>-----\n";
+    std::cout << actual << ".onion" << std::endl;
+    std::cout << dst << std::endl;
     fflush(stdout);
 
     BUF_MEM_free(buf);
@@ -661,13 +678,13 @@ onion_enc(uint8_t *onion, RSA *rsa) {
     signed int derlen;
 
     if ((derlen = i2d_RSAPublicKey(rsa, nullptr)) < 0)
-        error(const_cast<char *>("DER encoding failed!\n"));
+        throw "DER encoding failed!\n";
 
     if ((bufa = bufb = (uint8_t *) malloc((size_t) derlen)) == nullptr)
-        error(const_cast<char *>("malloc(derlen) failed!\n"));
+        throw "malloc(derlen) failed!\n";
 
     if (i2d_RSAPublicKey(rsa, &bufb) != derlen)
-        error(const_cast<char *>("DER encoding failed!\n"));
+        throw "DER encoding failed!\n";
 
     SHA1(bufa, (size_t) derlen, digest);
     free(bufa);
@@ -694,11 +711,11 @@ fsearch(uint8_t *buf, uint8_t *onion) {
     if (!nflag)
         for (i = 0; i < minlen; i++)
             if (onion[i] < 'a')
-                return 0;
+                return false;
 
     for (i = minlen; i <= maxlen; i++) {
         if (!nflag && onion[i - 1] < 'a')
-            return 0;
+            return false;
 
         zerobits(&ind, &wrd, buf, i);
 
@@ -706,22 +723,22 @@ fsearch(uint8_t *buf, uint8_t *onion) {
             (bsearch(&wrd, tree[ind].branch, tree[ind].count,
                      sizeof(tree[ind].branch[0]), &compare) != nullptr)) {
             onion[i] = '\0';
-            return 1;
+            return true;
         }
     }
-    return 0;
+    return false;
 }
 
 /* Regex mode search. */
 bool
 rsearch(__attribute__((unused)) uint8_t *buf, uint8_t *onion) {
-    return !regexec(regex, (char *) onion, 0, nullptr, 0);
+    return regexec(regex, (char *) onion, 0, nullptr, 0) == 0;
 }
 
 /* Fixed prefix mode search. */
 bool
 psearch(__attribute__((unused)) uint8_t *buf, uint8_t *onion) {
-    return !memcmp(onion, prefix, prefixlen);
+    return memcmp(onion, prefix, prefixlen) == 0;
 }
 
 /* Zero unused bits, split 10 byte 'buffer' into 2 byte 'ind' and 8 byte 'word'. */
@@ -760,13 +777,13 @@ setoptions(int argc, char *argv[]) {
     while ((ch = getopt(argc, argv, "cnvt:l:f:p:r:")) != -1)
         switch (ch) {
             case 'c':
-                cflag = 1;
+                cflag = true;
                 break;
             case 'n':
-                nflag = 1;
+                nflag = true;
                 break;
             case 'v':
-                vflag = 1;
+                vflag = true;
                 msg = verbose;
                 break;
             case 't':
@@ -785,34 +802,34 @@ setoptions(int argc, char *argv[]) {
                     usage();
                 break;
             case 'f':
-                fflag = 1;
+                fflag = true;
                 strncpy(fn, optarg, FILENAME_MAX);
                 search = fsearch;
                 break;
             case 'p':
-                pflag = 1;
+                pflag = true;
                 strncpy(prefix, optarg, ONION_LENP1);
                 minlen = maxlen = prefixlen = (unsigned int) strnlen(prefix, ONION_LENP1);
                 if (prefixlen > 16 || prefixlen < 1)
                     usage();
                 for (unsigned int i = 0; i < prefixlen; i++) {
                     prefix[i] = (char) tolower(prefix[i]);
-                    if (!isalpha(prefix[i]) && (!nflag || !isdigit(prefix[i]) ||
+                    if ((isalpha(prefix[i]) == 0) && (!nflag || (isdigit(prefix[i]) == 0) ||
                                                 prefix[i] < '2' || prefix[i] > '7'))
                         usage();
                 }
                 search = psearch;
                 break;
             case 'r':
-                rflag = 1;
+                rflag = true;
                 minlen = 1;
                 maxlen = 16;
                 if ((regex = (regex_t *) malloc(sizeof(regex_t))) == nullptr)
-                    error(const_cast<char *>("malloc(sizeof(regex_t)) failed!\n"));;
+                    throw "malloc(sizeof(regex_t)) failed!";
 
                 /* Do not use ICASE - too slow. */
                 if (regcomp(regex, optarg, REG_EXTENDED | REG_NOSUB) != 0)
-                    error(const_cast<char *>("Failed to compile regex expression!\n"));
+                    throw "Failed to compile regex expression!";
                 search = rsearch;
                 break;
             default:
@@ -823,21 +840,19 @@ setoptions(int argc, char *argv[]) {
     if (static_cast<int>(fflag) + static_cast<int>(rflag) + static_cast<int>(pflag) != 1)
         usage();
 
-    msg(const_cast<char *>("Verbose, "));
-    cflag ? msg(const_cast<char *>("continuous, ")) : msg(const_cast<char *>("single result, "));
-    nflag ? msg(const_cast<char *>("digits ok, ")) : msg(const_cast<char *>("no digits, "));
-    msg(const_cast<char *>("%d threads, prefixes %d-%d characters long.\n"),
-        threads, minlen, maxlen);
+    std::cout << "Verbose, ";
+    cflag ? std::cout << "continuous, " : std::cout << "single result, ";
+    nflag ? std::cout << "digits ok, " : std::cout << "no digits, ";
+    std::cout << threads << " thread(s), prefixes " << minlen << '-' << maxlen << " characters long.\n";
 }
 
 /* Print usage information and exit. */
-void
-usage() {
+void usage() {
     std::cout <<
               "Version: " << VERSION << '\n'
               << "\n"
               << "usage:\n"
-              << "eschalot [-c] [-v] [-t count] ([-n] [-l min-max] -f filename) | (-r regex) | (-p prefix)\n"
+              << __progname << " [-c] [-v] [-t count] ([-n] [-l min-max] -f filename) | (-r regex) | (-p prefix)\n"
               << "  -v         : verbose mode - print extra information to COUT\n"
               << "  -c         : continue searching after the hash is found\n"
               << "  -t count   : number of threads to spawn default is one)\n"
@@ -848,10 +863,9 @@ usage() {
               << "  -r regex   : search for a POSIX-style regular expression\n"
               << "\n"
               << "Examples:\n"
-              << "  eschalot -cvt4 -l8-12 -f wordlist.txt >> results.txt\n"
-              << "  eschalot -v -r '^test|^exam'\n"
-              << "  eschalot -ct5 -p test\n\n",
-            VERSION, __progname, __progname, __progname, __progname;
+              << __progname << " -cvt4 -l8-12 -f wordlist.txt >> results.txt\n"
+              << "               -v -r '^test|^exam'\n"
+              << "               -ct5 -p test\n\n";
 
     std::cout <<
               "  base32 alphabet allows letters [a-z] and digits [2-7]\nRegex pattern examples:\n"
@@ -864,35 +878,5 @@ usage() {
               << "    ^dusk.*dawn$  must begin with 'dusk' and end with 'dawn'\n"
               << "    [a-z2-7]{16}  any name - will succeed after one iteration\n";
 
-    exit(1);
+    exit(0);
 }
-
-/* Spam STDERR with diagnostic messages... */
-void
-verbose(char *message, ...) {
-    va_list ap;
-
-    va_start(ap, message);
-    vfprintf(stderr, message, ap);
-    va_end(ap);
-    fflush(stderr);
-}
-
-/* ...or be a very quiet thinker. */
-void
-normal(__attribute__((unused)) char *unused, ...) {
-}
-
-/* Print error message and exit. */
-/* (Not all Linuxes implement the err/errx functions properly.) */
-void
-error(char *message, ...) {
-    va_list ap;
-
-    va_start(ap, message);
-    std::cout << "ERROR: ";
-    std::cout << message << ap;
-    va_end(ap);
-    exit(1);
-}
-

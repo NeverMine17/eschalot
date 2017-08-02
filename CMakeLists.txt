@@ -7,6 +7,5 @@ add_definitions(-O3)
 
 link_libraries(ssl pthread crypto)
 
-add_executable(eschalot eschalot.cpp)
-add_executable(typecard typecard.cpp)
-add_executable(worgen worgen.cpp)
+add_executable(eschalot eschalot.cpp debug.h)
+add_executable(worgen worgen.cpp debug.h)
